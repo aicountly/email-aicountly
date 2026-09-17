@@ -1,5 +1,5 @@
-import { APP_NAME } from '../config'
-import { useAuth } from '../auth/AuthProvider'
+import { APP_NAME } from '../config.ts'
+import { useAuth } from '../auth/AuthProvider.tsx'
 
 /**
  * Shown only when the automatic portal jump did not happen: after a deliberate

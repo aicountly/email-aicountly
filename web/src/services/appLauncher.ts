@@ -1,7 +1,7 @@
-import { AICOUNTLY_APPS, CURRENT_APP_ID } from '../config/aicountlyApps'
-import type { AicountlyAppDef } from '../config/aicountlyApps'
-import { getAuthToken } from '../auth/tokens'
-import { isSandboxHost, PORTAL_LOGIN_PRODUCTION, PORTAL_LOGIN_SANDBOX } from '../auth/hostnames'
+import { AICOUNTLY_APPS, CURRENT_APP_ID } from '../config/aicountlyApps.ts'
+import type { AicountlyAppDef } from '../config/aicountlyApps.ts'
+import { getAuthToken } from '../auth/tokens.ts'
+import { isSandboxHost, PORTAL_LOGIN_PRODUCTION, PORTAL_LOGIN_SANDBOX } from '../auth/hostnames.ts'
 
 const LOGIN_RETURN_PARAM = 'returnUrl'
 

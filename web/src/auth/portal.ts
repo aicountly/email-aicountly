@@ -18,9 +18,9 @@ import {
   PORTAL_AUTH_API,
   resolveLoginPortalOrigin,
   resolveProductKeyFromHost,
-} from './hostnames'
-import { clearAllTokens, getAuthToken, getSesKey, saveSession } from './tokens'
-import { getApiBaseUrl } from '../config'
+} from './hostnames.ts'
+import { clearAllTokens, clearSession, getAuthToken, getSesKey, saveSession } from './tokens.ts'
+import { getApiBaseUrl } from '../config.ts'
 
 /** Portal convention for "come back here afterwards". */
 const RETURN_PARAM = 'returnUrl'
@@ -303,16 +303,28 @@ let mintInFlight: Promise<string> | null = null
  * A valid ses_key, minting one from the auth_token when needed.
  *
  * Concurrent callers share one request: a burst of API calls on a cold session
- * would otherwise mint a handful of keys and keep only the last.
+ * would otherwise mint a handful of keys and keep only the last. Email opens a
+ * mailbox, a briefing and a folder list on the same tick, so this is the normal
+ * case rather than an edge one.
+ *
+ * `force` discards the cached key first. It exists for the single 401 retry in
+ * services/api.ts: a key can be revoked server-side before it expires locally,
+ * and without this the retry would present the same dead key and fail again.
  *
  * There is no refresh path here on purpose. The key lives in memory and
  * `getSesKey()` returns null once it expires, so the next call simply mints a
  * fresh one from the long-lived auth_token — which is what a refresh would
- * achieve. `/seskey/refresh` becomes worth wiring up when the app starts making
- * enough API calls for the extra round trip to matter.
+ * achieve.
  */
-export async function ensureSesKey(): Promise<string> {
-  const existing = getSesKey()
+export async function ensureSesKey(force = false): Promise<string> {
+  if (force) {
+    clearSession()
+    // A mint already in flight was started with the key that has just been
+    // rejected, so waiting on it would return that same key.
+    mintInFlight = null
+  }
+
+  const existing = force ? null : getSesKey()
   if (existing) return existing
 
   if (!mintInFlight) {

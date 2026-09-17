@@ -1,0 +1,211 @@
+# ---------------------------------------------------------------------------
+# Roll a production destination back to the index it had before a release.
+#
+# WHAT THIS DOES: restores the `previous-index.html` that the deploy of
+# `release` saved, with one atomic rename. Because release assets are never
+# deleted, that index still points at files that are on disk, so the rollback
+# is complete the moment the rename lands.
+#
+# WHAT THIS DOES NOT DO: it never deletes a release, and it never touches the
+# API or the database. A schema change is not rolled back by putting an old
+# index.html back, and pretending otherwise would be worse than doing nothing.
+# A bad migration needs a forward fix.
+#
+# It refuses to roll back a destination that has MOVED ON since the release you
+# named — if somebody has deployed again in the meantime, restoring an older
+# index would undo their deploy without either of you noticing.
+#
+# The two destinations roll back INDEPENDENTLY. Rolling one back does not touch
+# the other; run this twice if both need it.
+# ---------------------------------------------------------------------------
+name: Roll back a production release
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Which destination to roll back
+        type: choice
+        required: true
+        options:
+          - business
+          - personal
+      release:
+        description: The release currently live that you want to undo (40-character commit sha)
+        type: string
+        required: true
+      force:
+        description: Roll back even if the live release is not the one named above
+        type: boolean
+        default: false
+
+concurrency:
+  group: email-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    name: Roll back ${{ inputs.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    environment:
+      name: email-${{ inputs.target }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate the release identifier
+        env:
+          RELEASE: ${{ inputs.release }}
+        run: |
+          case "$RELEASE" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+            *) echo "::error::release must be a 40-character lowercase commit sha"; exit 1 ;;
+          esac
+
+      - name: Resolve deployment configuration
+        id: config
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_REMOTE_ROOT: ${{ secrets.SSH_REMOTE_ROOT }}
+          LEGACY_HOST: ${{ inputs.target == 'business' && secrets.PROD_SSH_HOST || '' }}
+          LEGACY_USER: ${{ inputs.target == 'business' && secrets.PROD_SSH_USER || '' }}
+          LEGACY_KEY: ${{ inputs.target == 'business' && secrets.PROD_SSH_PRIVATE_KEY || '' }}
+          LEGACY_ROOT: ${{ inputs.target == 'business' && secrets.PROD_SSH_REMOTE_ROOT || '' }}
+        run: |
+          root="${SSH_REMOTE_ROOT:-$LEGACY_ROOT}"
+          if [ -z "${SSH_HOST:-$LEGACY_HOST}" ] || [ -z "${SSH_USER:-$LEGACY_USER}" ] \
+             || [ -z "${SSH_PRIVATE_KEY:-$LEGACY_KEY}" ] || [ -z "$root" ]; then
+            echo "::error::This destination has no deployment credentials configured."
+            exit 1
+          fi
+          case "$root" in
+            ''|.|./|'~'|'~/'|/|/home|/home/|/root|/var|/etc|/usr|/bin|/sbin|/boot|/opt|..|../*|*/../*|*/..)
+              echo "::error::SSH_REMOTE_ROOT is not a safe document root"; exit 1 ;;
+          esac
+          echo "remote_root=$root" >> "$GITHUB_OUTPUT"
+
+      - name: Confirm the live release is the one being rolled back
+        if: inputs.force == false
+        env:
+          ORIGIN: ${{ inputs.target == 'business' && 'https://email.aicountly.com' || 'https://aicountly.io' }}
+          RELEASE: ${{ inputs.release }}
+        run: |
+          live=$(curl -fsS --max-time 20 -H 'Cache-Control: no-cache' "$ORIGIN/" \
+            | grep -o 'name="aicountly-release" content="[0-9a-f]*"' \
+            | grep -o '[0-9a-f]\{40\}' | head -n1 || true)
+
+          if [ -z "$live" ]; then
+            echo "::error::Could not read a release marker from $ORIGIN. Roll back with force: true only if you are sure."
+            exit 1
+          fi
+          if [ "$live" != "$RELEASE" ]; then
+            echo "::error::$ORIGIN is serving $live, not $RELEASE. Somebody has deployed since — rolling back now would undo their release."
+            exit 1
+          fi
+          echo "$ORIGIN is serving $RELEASE, as expected."
+
+      - name: Configure SSH
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          LEGACY_HOST: ${{ inputs.target == 'business' && secrets.PROD_SSH_HOST || '' }}
+          LEGACY_PORT: ${{ inputs.target == 'business' && secrets.PROD_SSH_PORT || '' }}
+          LEGACY_USER: ${{ inputs.target == 'business' && secrets.PROD_SSH_USER || '' }}
+          LEGACY_KEY: ${{ inputs.target == 'business' && secrets.PROD_SSH_PRIVATE_KEY || '' }}
+        run: |
+          host="${SSH_HOST:-$LEGACY_HOST}"
+          port="${SSH_PORT:-${LEGACY_PORT:-22}}"
+          user="${SSH_USER:-$LEGACY_USER}"
+          key="${SSH_PRIVATE_KEY:-$LEGACY_KEY}"
+
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$key" > ~/.ssh/deploy_key
+          sed -i 's/\r$//' ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          ssh-keyscan -p "$port" -H "$host" >> ~/.ssh/known_hosts 2>/dev/null
+          [ -s ~/.ssh/known_hosts ] || { echo "::error::The host published no SSH host key."; exit 1; }
+          chmod 600 ~/.ssh/known_hosts
+
+          cat > ~/.ssh/config <<CFG
+          Host deploy-target
+            HostName $host
+            User $user
+            Port $port
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            PubkeyAcceptedAlgorithms +ssh-rsa
+            HostKeyAlgorithms +ssh-rsa
+            BatchMode yes
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Restore the previous index
+        env:
+          REMOTE_ROOT: ${{ steps.config.outputs.remote_root }}
+          RELEASE: ${{ inputs.release }}
+        run: |
+          ssh deploy-target "REMOTE_ROOT='$REMOTE_ROOT' RELEASE='$RELEASE' bash -s" <<'REMOTE'
+          set -eu
+
+          backup="$REMOTE_ROOT/releases/$RELEASE/previous-index.html"
+          live="$REMOTE_ROOT/index.html"
+          staged="$REMOTE_ROOT/.index-rollback.pending"
+
+          if [ ! -f "$backup" ]; then
+            echo "No previous-index.html was saved for release $RELEASE."
+            echo "That means it was the first release into this document root, and there is"
+            echo "nothing to roll back to. Deploy a known-good commit forward instead."
+            exit 1
+          fi
+
+          # Keep the index being rolled AWAY from, so the rollback is itself
+          # reversible. Nothing is ever deleted here.
+          cp -p "$live" "$REMOTE_ROOT/releases/$RELEASE/rolled-back-index.html" 2>/dev/null || true
+
+          cp -p "$backup" "$staged"
+          mv -f "$staged" "$live"
+
+          echo "Restored the index that preceded release $RELEASE."
+          REMOTE
+
+      - name: Confirm the rollback took effect
+        env:
+          ORIGIN: ${{ inputs.target == 'business' && 'https://email.aicountly.com' || 'https://aicountly.io' }}
+          RELEASE: ${{ inputs.release }}
+        run: |
+          sleep 3
+          live=$(curl -fsS --max-time 20 -H 'Cache-Control: no-cache' "$ORIGIN/" \
+            | grep -o 'name="aicountly-release" content="[0-9a-f]*"' \
+            | grep -o '[0-9a-f]\{40\}' | head -n1 || true)
+
+          if [ "$live" = "$RELEASE" ]; then
+            echo "::error::$ORIGIN is still serving $RELEASE. The rollback did not take effect."
+            exit 1
+          fi
+          echo "$ORIGIN is now serving ${live:-an unstamped index}."
+          {
+            echo "### Rollback"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Destination | $ORIGIN |"
+            echo "| Rolled back from | \`$RELEASE\` |"
+            echo "| Now serving | \`${live:-unstamped}\` |"
+            echo "| Assets deleted | none — every release directory is intact |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clean up SSH credentials
+        if: always()
+        run: rm -f ~/.ssh/deploy_key ~/.ssh/config

@@ -1,140 +1,222 @@
-# Deploying Email
+# Deploying Aicountly Email
 
-## Layout
+## What goes where
 
 ```
 web/          React app (Vite). Builds to web/dist.
-server-php/   PHP API. Plain PHP, no build step — deployed as-is.
-docs/         this file, plus the auth notes
+server-php/   The Email API. Plain PHP, no build step — deployed as-is.
+scripts/      Release stamping, live verification, the ownership audit.
 ```
 
-## What lands where on cPanel
+| Workflow | Deploys | Destinations |
+|---|---|---|
+| Deploy to cPanel Production | one build → both frontends; the API once | https://email.aicountly.com and https://aicountly.io |
+| Deploy to cPanel Sandbox | one build → one frontend; the API | https://email.gh.aicountly.com |
+| Roll back a production release | the previous root `index.html` | one destination at a time |
 
-| Workflow | Deploys | Destination | Reachable at |
-| --- | --- | --- | --- |
-| Deploy to cPanel Production | `web/dist/` then `server-php/` | `<remote root>/` and `<remote root>/api/` | https://email.aicountly.com (+ `/api`) |
-| Deploy to cPanel Sandbox | `web/dist/` then `server-php/` | `<remote root>/` and `<remote root>/api/` | https://email.gh.aicountly.com (+ `/api`) |
+**Deployment is manual.** `workflow_dispatch` is the only trigger that deploys;
+merging never does. The production workflow also runs on `pull_request`, where
+it builds and tests and stops before any deploy step.
 
-`<remote root>` is the `*_SSH_REMOTE_ROOT` secret for that environment,
-normally `public_html` (or the subdomain's own document root).
+## One build, two destinations
 
-Deployment is manual only — **Actions → pick a workflow → Run workflow**.
-Nothing deploys on push or merge.
+The same artifact is deployed to both. It has to be: the hostname selects the
+presentation at runtime (`web/src/config/frontend.ts`), so a second build for
+the second domain would be a second thing to keep in step for no benefit.
 
-## One workflow per environment, not per half
+The **backend and its migrations deploy once**, with the business destination.
+Running migrations per frontend would run them twice against one database.
 
-Production and sandbox are genuinely separate targets — different SSH
-credentials, different servers — so each gets its own workflow. Within one
-environment, though, the web build and the API are deployed by the same run,
-one after the other: first `web/dist/` to the document root, then
-`server-php/` to `api/` inside it. Splitting those into separate workflows
-would only mean clicking twice for something that is always meant to happen
-together, with two SSH sessions and two sets of runner setup instead of one.
+Two hosts cannot be updated as one transaction. `fail-fast` is off, each
+destination reports its own result, and the Report job says so explicitly. A
+partial deployment is a real outcome, not a reporting bug.
 
-### Why the api folder survives the web deploy step
-
-The web deploy step runs `rsync --delete` against the document root, which
-would otherwise remove everything not in the build — including `api/`, since
-the API lives inside the document root. That step therefore excludes `api/`
-explicitly. **Removing that exclude would delete the entire backend on the
-next deploy.**
-
-### Why the API's .env survives the API deploy step
-
-The API deploy step also runs `rsync --delete`, this time against `api/`. The
-API's `.env` is created once by hand on the server and exists nowhere else, so
-both `--exclude='.env'` and `--exclude='.env.*'` are what keep it alive.
-Removing them would wipe the live configuration on the next deploy.
-
-Neither `.env` is ever uploaded either: `.gitignore` keeps them out of the
-repository, and the workflow fails the build outright if a committed `.env`
-appears under `server-php/`.
-
-## Configuration: two different mechanisms
-
-This is the part worth reading carefully, because the frontend and the backend
-behave in opposite ways.
-
-### React (web/) — build time
-
-Vite inlines every `VITE_*` value into the JavaScript bundle when the app is
-compiled. The deployed result is plain static files that **never read a `.env`
-from disk**. Putting a `.env` in the document root has no effect.
-
-To change a frontend value: change it in the workflow (or in the optional
-repository variable), then re-run the workflow. The rebuild is what applies it.
-
-Never put a secret in a `VITE_` variable — anything inlined into the bundle is
-public to anyone who views the page source.
-
-The API URL needs no configuration in the normal case: with
-`PROD_API_BASE_URL` / `SANDBOX_API_BASE_URL` unset, the app calls its own origin
-+ `/api`, which is where the same workflow's API step deploys `server-php`.
-Those repository variables exist only to override that — for example if the API
-moves to its own domain.
-
-### server-php — runtime
-
-PHP reads its `.env` on **every request**. So the API's `.env` belongs on the
-server, and only on the server.
-
-Create it once by hand — cPanel File Manager or SSH — at
-`<remote root>/api/.env`, from `server-php/.env.example`:
+## The release layout on the server
 
 ```
-APP_ENV=production
+<document root>/
+  index.html                     ← the live release. Replaced by ONE atomic rename.
+  .htaccess                      ← SPA fallback, /releases/ exclusion, caching
+  api/                           ← server-php, and its hand-written .env
+  releases/
+    <commit-sha>/                ← immutable. Never deleted by a deploy.
+      assets/… apps/…
+      index.html
+      previous-index.html        ← what this release replaced. The rollback target.
 ```
 
-That is the whole file for a production deploy; `APP_ENV=sandbox` for the
-sandbox. `GET /api/health` reports the value back, which is how you confirm
-you are looking at the environment you think you are.
+Why it is shaped like this:
 
-The API has no database yet. When the product needs one, add the credentials to
-this same file — and note that cPanel prefixes both database and user with the
-account name, so a database entered as `app` becomes `<cpaneluser>_app`. Use the
-full prefixed names, add the user to the database with **ALL PRIVILEGES**, and
-set `DB_HOST=localhost` (on cPanel the database is on the same machine).
+* **Assets are addressed by commit**, so two releases coexist and a browser that
+  loaded the old `index.html` keeps working across a deploy.
+* **Nothing is deleted.** No `--delete` against the document root, so a rollback
+  always has assets to roll back to.
+* **`index.html` is activated last**, by copying into
+  `.index-<sha>.pending` and `mv`-ing it over the live file. `mv` within one
+  filesystem is atomic, so no request ever sees a partial document.
+* **`.htaccess` is excluded from the release directory** and sent to the
+  document root separately. Inside `releases/` its SPA fallback would answer a
+  missing asset with the application instead of a 404 — and the browser would
+  then try to execute HTML as JavaScript.
 
-### Protecting the API's .env over HTTP
+### Migrating an existing document root
 
-Because `api/` sits inside the document root, `.env` would be fetchable at
-`https://email.aicountly.com/api/.env` unless Apache is told otherwise.
-`server-php/.htaccess` ships the rule that denies it:
+The first deploy under this scheme leaves the previous `assets/` and `apps/`
+directories at the document root. They are harmless — nothing references them
+once the new `index.html` is live — and can be removed by hand later. They are
+deliberately not deleted automatically, because a deploy that deletes files it
+did not put there is a deploy that will one day delete the wrong ones.
 
-```apache
-RedirectMatch 404 /\.(?!well-known)
+## Required GitHub configuration
+
+### Environments
+
+| Environment | Destination |
+|---|---|
+| `email-business` | https://email.aicountly.com |
+| `email-personal` | https://aicountly.io |
+
+Each supplies its own **secrets**:
+
+| Secret | Notes |
+|---|---|
+| `SSH_HOST` | the cPanel host |
+| `SSH_PORT` | optional, defaults to 22 |
+| `SSH_USER` | the cPanel account username |
+| `SSH_PRIVATE_KEY` | the whole OpenSSH key, BEGIN and END lines included |
+| `SSH_REMOTE_ROOT` | the exact document root, e.g. `public_html` |
+
+The **business** destination falls back to the repository-level `PROD_SSH_*`
+secrets that already exist, so nothing has to be reconfigured for it. The
+**personal** destination has no fallback, deliberately: inheriting the business
+credentials would deploy the personal build over the business site.
+
+A destination with **none** of its secrets set is skipped with a warning and
+named in the summary. A destination with **some** of them set fails, because a
+half-configured target is how a deploy lands somewhere unintended.
+
+### Repository secrets and variables
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `PROD_SSH_HOST`, `PROD_SSH_PORT`, `PROD_SSH_USER`, `PROD_SSH_PRIVATE_KEY`, `PROD_SSH_REMOTE_ROOT` | secret | existing business credentials; still valid |
+| `SANDBOX_SSH_*` | secret | the same five for sandbox |
+| `PROD_PHP_BIN`, `SANDBOX_PHP_BIN` | secret | full path to a PHP 8.1+ with `pdo_pgsql`, if the default search fails |
+| `PROD_API_BASE_URL`, `SANDBOX_API_BASE_URL` | variable | optional; points BOTH destinations at one backend |
+| `PROD_GA4_MEASUREMENT_ID` | variable | optional GA4 id |
+
+## Hosting prerequisites
+
+On each frontend document root:
+
+1. **Apache with `mod_rewrite` and `mod_headers`.** The shipped `.htaccess`
+   provides the SPA fallback, the `/releases/` exclusion, no-cache on
+   `index.html` and immutable caching on hashed assets. If the server carries
+   hand-written rules as well, merge them into `web/public/.htaccess` — the copy
+   on the server is replaced on every deploy.
+2. **SSH with key authentication.** cPanel imports and authorises keys as two
+   separate actions: after importing, SSH Access → Manage SSH Keys → Manage →
+   Authorize. An imported-but-unauthorised key fails as "Permission denied
+   (publickey)".
+3. **TLS.** The verifier does not disable certificate validation.
+
+On the API host, additionally:
+
+4. **PHP 8.1+** with `pdo_pgsql`, `curl`, `openssl`, `mbstring`, `dom` and
+   `imap`. Without `imap` the mail store reports itself unconfigured and says
+   so, which is honest but not a working mailbox.
+5. **PostgreSQL**, reachable with the credentials in `api/.env`.
+6. **`api/.env`**, created once by hand from `api/.env.example`. It is never
+   uploaded and never deleted.
+7. **A cron entry** for scheduled sends:
+   ```
+   * * * * * /usr/local/bin/php /home/<user>/public_html/api/bin/dispatch-scheduled.php >/dev/null 2>&1
+   ```
+
+## First deploy, in order
+
+1. Create the `email-business` and `email-personal` environments and set their
+   secrets (business may rely on the existing `PROD_SSH_*`).
+2. **Actions → Deploy to cPanel Production → Run workflow → targets: business.**
+3. On the server: `cp api/.env.example api/.env`, fill it in, re-run so the
+   migrations apply.
+4. Check `https://email.aicountly.com/api/health` — `usable: true` means the
+   database and the mail store are both ready.
+5. Configure the `email-personal` environment.
+6. **Run workflow → targets: both.**
+
+## Verification
+
+`scripts/verify-release.py` runs against each live origin after its deploy and
+fails the job on any of:
+
+* the release marker in the served document does not match the commit
+* a referenced script or stylesheet does not load, or loads with the wrong
+  content type
+* a deep link (`/auth/callback`) does not serve the application
+* a missing file under `/releases/` does **not** return 404
+* `index.html` is cached
+* a development fixture marker is in the served document
+* a stale service worker is present at `/sw.js`
+
+A release marker on its own is not a smoke test, which is why the rest are
+there.
+
+## Rolling back
+
+**Actions → Roll back a production release → Run workflow**, naming the
+destination and the release currently live.
+
+It refuses if that destination has moved on since — if somebody has deployed in
+the meantime, restoring an older index would undo their release without either
+of you noticing. `force: true` overrides that, deliberately awkwardly.
+
+It restores `releases/<sha>/previous-index.html` with one atomic rename, keeps a
+copy of the index it rolled away from so the rollback is itself reversible, and
+**deletes nothing**.
+
+It does **not** roll back the API or the database. A bad migration needs a
+forward fix; putting an old `index.html` back would leave new data under old
+code.
+
+## Why rsync over SSH rather than SFTP
+
+The reference design for this work assumed SFTP-only access. This hosting
+demonstrably has an SSH shell — the existing workflow has run remote `bash` for
+migrations since before this change — so rsync is the better tool: it transfers
+only what changed, it can verify what it sent, and `mv` gives a genuinely atomic
+activation that an SFTP client cannot always guarantee.
+
+If a destination is ever SFTP-only, the activation step is the only part that
+needs replacing: upload to `.index-<sha>.pending` and `posix_rename` it onto
+`index.html`. Everything else in the layout already works over SFTP.
+
+## Local development
+
+```bash
+cd web
+npm install
+cp ../.env.example ../.env
+npm run dev          # http://localhost:5173, business experience
 ```
 
-The web build does the same for the document root via `web/public/.htaccess`,
-but those rules stop applying inside `api/` once the API's own take over.
+`VITE_DEV_FRONTEND_MODE=personal` renders the personal experience on localhost.
+Point `VITE_API_BASE_URL` at the deployed sandbox API and add
+`http://localhost:5173` to `CORS_ALLOWED_ORIGINS` in that server's `api/.env`.
 
-### The Authorization header
+```bash
+cd server-php
+cp .env.example .env      # set APP_ENV=local
+php -S localhost:8000
+php bin/migrate.php --status
+php tests/run.php
+```
 
-`server-php/.htaccess` also copies the `Authorization` header into the request
-environment. Apache does not pass it to PHP under CGI/FastCGI unless told to,
-and without it the auth relay forwards no credential — the portal answers 401
-and sign-in fails for everyone, with nothing in the logs to explain why.
-
-## Required secrets
-
-Per environment, under Settings → Secrets and variables → Actions → Secrets:
-
-`PROD_SSH_HOST`, `PROD_SSH_PORT`, `PROD_SSH_USER`, `PROD_SSH_PRIVATE_KEY`,
-`PROD_SSH_REMOTE_ROOT` — and the same five with a `SANDBOX_` prefix.
-
-Both workflows validate these before building, and verify SSH authentication
-before writing anything to the server. Because the deploys run with
-`--delete`, a `*_SSH_REMOTE_ROOT` that would resolve to the home directory
-itself, a system directory, or anything containing `..` is refused.
-
-## First deploy checklist
-
-1. Create the subdomain in cPanel and note its document root.
-2. Add the five SSH secrets for that environment.
-3. Run **Deploy to cPanel …**. This deploys web and API together; the API is
-   deployed but unconfigured until the next step.
-4. Create `api/.env` on the server (see above), from `server-php/.env.example`.
-5. Re-run **Deploy to cPanel …** (or just confirm the API), then confirm
-   `https://<host>/api/health` returns the right `env` and open the site to
-   sign in. See [auth/AICOUNTLY_AUTH_WORKFLOW.md](auth/AICOUNTLY_AUTH_WORKFLOW.md)
-   for what a healthy login looks like.
+| Script | Purpose |
+|---|---|
+| `npm run dev` | Vite dev server |
+| `npm run build` | Type-check, then build to `web/dist/` |
+| `npm run typecheck` | Type-check only |
+| `npm run test` | The frontend test suite (no browser needed) |
+| `php server-php/tests/run.php` | The backend test suite (no database needed) |
+| `python3 scripts/audit-data-ownership.py` | The cross-app replication audit |

@@ -13,8 +13,8 @@ import {
   readAuthCallback,
   redirectToPortalLoginForm,
   redirectToPortalSso,
-} from './portal'
-import { clearAllTokens, getAuthToken, setAuthToken } from './tokens'
+} from './portal.ts'
+import { clearAllTokens, getAuthToken, setAuthToken } from './tokens.ts'
 
 /**
  * `loading` covers both "starting up" and "leaving for the portal" — in the

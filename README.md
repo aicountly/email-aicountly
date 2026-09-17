@@ -1,162 +1,158 @@
-# email-aicountly
+# Aicountly Email
 
-Email for Aicountly — a React single-page app built with Vite and TypeScript,
-with a small PHP API alongside it. Both halves deploy to cPanel.
+**Every conversation moves business forward.**
 
-| Environment | App | API |
-| --- | --- | --- |
-| Production | https://email.aicountly.com | https://email.aicountly.com/api |
-| Sandbox | https://email.gh.aicountly.com | https://email.gh.aicountly.com/api |
+A mail client that knows what the rest of your business already knows. One React
+application, one PHP API, one PostgreSQL schema, served to two destinations:
 
-## What this app does today
+| | Experience | |
+|---|---|---|
+| https://email.aicountly.com | Business | shared mailboxes, delegation, company context, product actions |
+| https://aicountly.io | Personal | summaries, drafting, reminders, personal Calendar and Contacts |
+| https://email.gh.aicountly.com | Business (sandbox) | |
 
-Login → Dashboard. The dashboard shows a welcome message and a **Log out**
-button, and nothing else. No navigation, no modules, no placeholder cards —
-those arrive with the product.
+Aicountly Interactive Services Private Limited.
 
-Signing in is the AICOUNTLY portal's job, the same as every other AICOUNTLY
-SaaS: the app redirects to the portal, the portal returns an `auth_token`, and
-the app exchanges it for a short-lived session key. A user who is already signed
-in to another AICOUNTLY product lands straight on the dashboard.
+## These are not two products
 
-See [docs/auth/AICOUNTLY_AUTH_WORKFLOW.md](docs/auth/AICOUNTLY_AUTH_WORKFLOW.md).
+The hostname selects a **presentation**. It grants nothing.
+
+```
+hostname  ──▶  web/src/config/frontend.ts   ──▶  which layout
+backend   ──▶  GET /api/v1/capabilities     ──▶  what this account may actually do
+```
+
+A business user who opens aicountly.io keeps their shared mailboxes and sees the
+personal layout. A personal user who opens email.aicountly.com sees the business
+layout with the business features absent and the reason given. Both are tested.
+
+A hostname nobody configured renders an error screen and never starts the
+application.
+
+**A mailbox address is not an account type.** A business account may send from
+`@aicountly.io` or from its own custom domain.
+
+## The rule this product is built around
+
+> Business data owned by another AICOUNTLY product is **read live** over its API
+> and never copied into Email's database.
+
+No synchronisation cron, no ETL, no mirror tables, no foreign database
+connection, no local substitute for Contacts or Calendar or Books. Every
+business figure on screen carries its source and the time it was read, and is
+re-read when the screen is reopened.
+
+`scripts/audit-data-ownership.py` runs in CI and fails the build if that ever
+stops being true. See [docs/EMAIL_DATA_OWNERSHIP.md](docs/EMAIL_DATA_OWNERSHIP.md).
+
+## What Pulse does, and what it refuses to do
+
+| Does | Refuses to |
+|---|---|
+| Counts what needs you, each count linking to the rows behind it | Invent a "time saved" figure, or total money from email text |
+| Classifies a thread and says **why**, quoting the phrase | Guess a deadline. "No deadline found." is a first-class answer |
+| Extracts promises as **proposals** | Turn an incoming proposal into an agreement. Only a person does that |
+| Compares an email against a live business record | Subtract two figures that are not on the same basis. It says "Comparison requires review" and names what differs |
+| Drafts, shortens, rewrites, translates | Send anything. A generated draft stays a draft |
+| Reports SPF, DKIM and DMARC | Call a sender safe. A compromised account passes all three |
+| Previews an action, then executes it on approval | Act on an email that tells it to |
+| Reads the briefing aloud on request | Autoplay, or open a microphone |
+
+Arithmetic is `server-php/src/Pulse/Comparison.php` — ordinary code, the same
+answer every time, pinned by tests. The model writes prose and picks from a
+fixed list; it has no tools, no database and no permissions.
+
+## Sending says exactly what happened
+
+```
+draft saved → queued → accepted by the outbound server
+                    ↘  deferred   (the same message will be retried)
+                    ↘  failed     (a permanent refusal, with the reason)
+                    ↘  uncertain  (the connection died after the body was written)
+```
+
+There is no "delivered". Nothing in this deployment observes delivery, so
+claiming it would be a lie the user acts on.
+
+An **uncertain** outcome stops and asks. Retrying it automatically sends the
+same invoice twice; failing it automatically loses a message that was sent.
 
 ## Layout
 
 ```
-web/          React app (Vite). Builds to web/dist, deployed to the document root.
-server-php/   PHP API. Deployed to the api/ folder inside the document root.
-docs/         deployment and auth notes
+design/           the approved visual reference — never deployed
+web/              React 19 + Vite 8 + TypeScript → web/dist
+server-php/       the Email API. Plain PHP, no composer, no build step
+scripts/          release stamping, live verification, the ownership audit
+docs/             architecture, ownership, the API contract, integrations, security
 ```
 
 ## Getting started
 
-Requires Node.js 22 or newer.
+Node.js 22 or newer, PHP 8.1 or newer.
 
 ```bash
 cd web
 npm install
 cp ../.env.example ../.env
-npm run dev
+npm run dev                 # http://localhost:5173
 ```
-
-The dev server runs on http://localhost:5173 and signs in through the **sandbox**
-portal. Point `VITE_API_BASE_URL` at the deployed sandbox API
-(`https://email.gh.aicountly.com/api`) so the token exchange has somewhere to
-go — and add `http://localhost:5173` to `CORS_ALLOWED_ORIGINS` in that server's
-`api/.env`, since localhost is the one case where the app and API are not
-same-origin.
-
-| Script | Purpose |
-| --- | --- |
-| `npm run dev` | Vite dev server on http://localhost:5173 |
-| `npm run build` | Type-check, then build to `web/dist/` |
-| `npm run typecheck` | Type-check only |
-| `npm run preview` | Serve the production build locally |
-
-The PHP API has no build step and no dependencies. To run it locally:
 
 ```bash
 cd server-php
-cp .env.example .env      # set APP_ENV=local
+cp .env.example .env        # set APP_ENV=local
 php -S localhost:8000
 ```
 
+| Command | Purpose |
+|---|---|
+| `npm run dev` | Vite dev server |
+| `npm run build` | Type-check, then build |
+| `npm run typecheck` | Type-check only |
+| `npm run test` | Frontend tests — no browser needed |
+| `php server-php/tests/run.php` | Backend tests — no database needed |
+| `php server-php/bin/migrate.php --status` | What migrations are pending |
+| `python3 scripts/audit-data-ownership.py` | The cross-app replication audit |
+
+Open `design/email-workspace.html` in a browser to see the approved design. It
+is a scaffold, not the application: every value in it is illustrative, and the
+CI audit fails the build if one of them reaches the bundle.
+
 ## Environment variables
 
-`.env` is git-ignored and is never deployed — `.env.example` is the tracked
-template. There are two of them, and they work in opposite ways:
+Two files, and they work in opposite ways.
 
 | File | Read | Used by |
-| --- | --- | --- |
+|---|---|---|
 | `.env.example` | **Build time**, inlined into the bundle | `web/` |
 | `server-php/.env.example` | **Runtime**, on every request | `server-php/` |
 
-| Variable | Description |
-| --- | --- |
-| `VITE_API_BASE_URL` | API base URL. Empty = this app's own origin + `/api` |
-| `VITE_APP_NAME` | Display name shown in the UI |
-| `VITE_APP_ENV` | `local`, `sandbox`, or `production` |
-| `VITE_PRODUCT_KEY` | Portal product key. Derived from the hostname when unset |
-| `VITE_PORTAL_LOGIN_URL` | Login portal override. Local development only |
-
-Only `VITE_`-prefixed variables reach the browser bundle, and Vite inlines them
-at build time, so **treat every one of them as public**. Never put a secret,
-token, or password in a `VITE_` variable.
-
-### These are build-time values, not runtime values
-
-This matters for how you change an endpoint in production.
-
-Vite substitutes each `VITE_*` value into the JavaScript bundle when the app is
-compiled. The deployed result is plain static files — **the app never reads a
-`.env` from disk at runtime**, so placing a `.env` next to it in the cPanel
-document root has no effect. Changing an endpoint means rebuilding and
-redeploying.
-
-This is the opposite of `server-php`, which is PHP and does read its own `.env`
-on every request.
+Only `VITE_`-prefixed variables reach the browser, and Vite inlines them at
+build time — **treat every one of them as public.** Mail-server passwords, the
+model key, service keys and the database password all live in
+`server-php/.env`, which is created once by hand on the server and is never
+uploaded and never deleted by a deploy.
 
 ## Deployment
 
-Deployment is **manual only**. Nothing deploys on push or merge — both
-workflows trigger exclusively via `workflow_dispatch`.
+Manual only. **Actions → pick a workflow → Run workflow.**
 
-To deploy: **Actions** → pick a workflow → **Run workflow** → pick a branch →
-**Run**.
+One build is stamped with the commit and deployed to both destinations
+independently; assets live under `releases/<sha>/` and are never deleted, so an
+open browser session survives a deploy and a rollback has something to restore.
+The backend and its migrations deploy once.
 
-| Workflow | Deploys | To |
-| --- | --- | --- |
-| Deploy to cPanel Production | `web/dist/` then `server-php/` | document root, then `api/` inside it |
-| Deploy to cPanel Sandbox | `web/dist/` then `server-php/` | document root, then `api/` inside it |
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the required environments,
+secrets, hosting prerequisites and the rollback procedure.
 
-Production and sandbox deploy separately, so releasing to one cannot disturb
-the other. Within one environment, web and API deploy together in the same
-run — they always change in step, so there is no separate "API only" workflow
-to remember to run. Source, `node_modules`, and `.env` never reach the server.
+## Documentation
 
-Before deploying, each workflow checks that every required SSH secret is set and
-that the remote root is a safe path, so a misconfigured repository fails in
-seconds instead of part-way through a deploy.
-
-### Configuration
-
-These repository **secrets** must be set (Settings → Secrets and variables →
-Actions → Secrets):
-
-`PROD_SSH_HOST`, `PROD_SSH_PORT`, `PROD_SSH_USER`, `PROD_SSH_PRIVATE_KEY`,
-`PROD_SSH_REMOTE_ROOT` — and the same five with a `SANDBOX_` prefix.
-
-`*_SSH_REMOTE_ROOT` is the document root to deploy into. It may be relative,
-which is the usual cPanel form — `public_html` resolves against the SSH user's
-home directory, giving `/home/<user>/public_html`. An absolute path works too.
-Because the deploy runs with `--delete`, the workflow refuses a value that would
-resolve to the home directory itself (`.`, `~`, empty), a system directory, or
-anything containing `..`.
-
-The repository **variables** `PROD_API_BASE_URL` and `SANDBOX_API_BASE_URL` are
-optional. Unset, the app calls its own origin + `/api` — which is where the same
-workflow puts the API. Set one only to point the app at a different API domain.
-
-### Email on the rsync steps
-
-Each workflow runs two `rsync --delete` steps, one after the other, and the
-excludes are what make that safe.
-
-The **web** step syncs the document root and excludes:
-
-- `api/` — the PHP backend lives inside the document root and is deployed by the
-  next step in the same run. **Without this exclude the web step would delete
-  the entire API.**
-- `.well-known/` — Let's Encrypt / AutoSSL validation; removing it breaks
-  certificate renewal
-- `cgi-bin/` — cPanel-managed, present in every document root
-- `.env`, `.env.*`, `.git*` — never published
-
-The **API** step syncs `api/` and excludes `.env`, `.env.*` and `.git*`: the
-API's `.env` is created once on the server and read at runtime, so it must
-survive every deploy. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
-
-`web/public/.htaccess` ships with the build and provides the SPA history
-fallback — which is also what serves the portal's `/auth/callback` landing — plus
-cache headers (`index.html` uncached, hashed assets cached for a year).
+| | |
+|---|---|
+| [EMAIL_ARCHITECTURE.md](docs/EMAIL_ARCHITECTURE.md) | how the pieces fit |
+| [EMAIL_DATA_OWNERSHIP.md](docs/EMAIL_DATA_OWNERSHIP.md) | what Email owns, and what it must never keep |
+| [EMAIL_API_CONTRACT.md](docs/EMAIL_API_CONTRACT.md) | the v1 contract |
+| [EMAIL_INTEGRATIONS.md](docs/EMAIL_INTEGRATIONS.md) | what is contracted, and what is waiting for one |
+| [EMAIL_SECURITY.md](docs/EMAIL_SECURITY.md) | what is defended, and what is not claimed |
+| [DEPLOYMENT.md](docs/DEPLOYMENT.md) | environments, prerequisites, rollback |
+| [auth/AICOUNTLY_AUTH_WORKFLOW.md](docs/auth/AICOUNTLY_AUTH_WORKFLOW.md) | the portal sign-in flow |

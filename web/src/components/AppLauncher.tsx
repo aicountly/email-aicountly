@@ -7,9 +7,9 @@ import {
   fetchBundledIconVersions,
   preloadLauncherIcons,
   readIconChoices,
-} from '../services/appLauncher'
-import type { LauncherTile } from '../services/appLauncher'
-import { useLauncherTileIcon } from '../services/useLauncherTileIcon'
+} from '../services/appLauncher.ts'
+import type { LauncherTile } from '../services/appLauncher.ts'
+import { useLauncherTileIcon } from '../services/useLauncherTileIcon.ts'
 
 const S: Record<string, CSSProperties> = {
   wrap: { position: 'fixed', top: 16, left: 16, zIndex: 1000, display: 'inline-block' },

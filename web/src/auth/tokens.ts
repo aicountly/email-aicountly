@@ -15,7 +15,7 @@ import {
   readSharedAuthToken,
   writeSharedAuthToken,
   clearSharedAuthToken,
-} from './sharedAuthCookie'
+} from './sharedAuthCookie.ts'
 
 const AUTH_TOKEN_KEY = 'auth_token'
 

@@ -1,22 +1,25 @@
 # ---------------------------------------------------------------------------
-# Deploy Email to cPanel Sandbox  (https://email.gh.aicountly.com)
+# Deploy Aicountly Email to cPanel Sandbox  (https://email.gh.aicountly.com)
 #
-# MANUAL ONLY. The single trigger is workflow_dispatch — merging or pushing
-# never deploys. Add no push/pull_request/schedule triggers to this file.
+# MANUAL ONLY. workflow_dispatch is the single trigger — merging or pushing
+# never deploys. Add no push/schedule triggers to this file.
 #
-# What it does: builds web/ on the runner, rsyncs the built dist/ over SSH to
-# the cPanel document root, then rsyncs server-php/ to the api/ folder inside
-# that same document root. No source, no node_modules, and no .env ever reach
-# the server.
+# The sandbox serves the BUSINESS presentation, because email.gh.aicountly.com
+# is in the reviewed host table as business (web/src/config/frontend.ts). It is
+# one destination, so there is no matrix here; production has two and deploys
+# the same artifact to both.
+#
+# Same release scheme as production: assets go into releases/<sha>/, the root
+# index.html is activated last with one atomic rename, and no previous release
+# is deleted.
 # ---------------------------------------------------------------------------
 name: Deploy to cPanel Sandbox
 
 on:
   workflow_dispatch:
 
-# Never let two deploys to the same target overlap.
 concurrency:
-  group: deploy-sandbox
+  group: email-sandbox
   cancel-in-progress: false
 
 permissions:
@@ -26,16 +29,15 @@ jobs:
   deploy:
     name: Build and deploy to Sandbox
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
       # Fail before doing any work if the deploy target is not fully
-      # configured. Without this an unset secret would silently expand to an
-      # empty string, and `rsync --delete` against "user@host:/" would target
-      # the filesystem root instead of the document root.
+      # configured. An unset secret would otherwise expand to an empty string
+      # and rsync would target something nobody intended.
       - name: Validate deployment configuration
         env:
           SSH_HOST: ${{ secrets.SANDBOX_SSH_HOST }}
@@ -54,31 +56,21 @@ jobs:
           fi
 
           # A relative remote root is normal on cPanel: rsync resolves it
-          # against the SSH user's home directory, so "public_html" means
-          # /home/<user>/public_html. Both forms are accepted.
-          #
-          # What must be refused is anything that resolves to the home
-          # directory itself or climbs out of it, because the deploy runs with
-          # --delete and would take the rest of the account with it.
+          # against the SSH user's home directory. What must be refused is
+          # anything that resolves to the home directory itself or climbs out
+          # of it, because the API step below runs with --delete.
           case "$REMOTE_ROOT" in
             ''|.|./|'~'|'~/')
-              echo "::error::SANDBOX_SSH_REMOTE_ROOT points at the home directory itself, which --delete would wipe. Use the document root instead, e.g. public_html"
-              exit 1
-              ;;
+              echo "::error::SANDBOX_SSH_REMOTE_ROOT points at the home directory itself. Use the document root, e.g. public_html"
+              exit 1 ;;
             /|/home|/home/|/root|/var|/etc|/usr|/bin|/sbin|/boot|/opt)
-              echo "::error::SANDBOX_SSH_REMOTE_ROOT is a system directory and is unsafe for a --delete deploy"
-              exit 1
-              ;;
+              echo "::error::SANDBOX_SSH_REMOTE_ROOT is a system directory and is unsafe for a deploy"
+              exit 1 ;;
             ..|../*|*/../*|*/..)
               echo "::error::SANDBOX_SSH_REMOTE_ROOT must not contain a parent-directory reference"
-              exit 1
-              ;;
+              exit 1 ;;
           esac
-
-          case "$REMOTE_ROOT" in
-            /*) echo "Deploy target validated (absolute path)." ;;
-            *)  echo "Deploy target validated ('$REMOTE_ROOT', relative to the SSH user's home directory)." ;;
-          esac
+          echo "Deploy target validated."
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -91,47 +83,56 @@ jobs:
         working-directory: web
         run: npm ci
 
+      - name: Type-check
+        working-directory: web
+        run: npm run typecheck
+
+      - name: Test
+        working-directory: web
+        run: npm run test:ci
+
+      - name: Lint the PHP API
+        run: find server-php -name '*.php' -print0 | xargs -0 -n1 php -l > /dev/null
+
+      - name: Audit for cross-application database replication
+        run: python3 scripts/audit-data-ownership.py
+
       - name: Build
+        working-directory: web
         env:
-          # Build-time config. Vite inlines VITE_* into the bundle, so these are
-          # public values — never put a secret here.
-          #
-          # SANDBOX_API_BASE_URL (Settings > Secrets and variables > Actions >
-          # Variables) is an OPTIONAL override. Left unset, the app calls its own
-          # origin + /api, which is exactly where the "Deploy server-php to the
-          # api folder" step below puts it.
+          # SANDBOX_API_BASE_URL is an OPTIONAL override. Left unset, the app
+          # calls its own origin + /api, which is where this workflow puts the
+          # API below.
           VITE_API_BASE_URL: ${{ vars.SANDBOX_API_BASE_URL }}
           VITE_APP_NAME: Email
           VITE_APP_ENV: sandbox
-        working-directory: web
+          VITE_GA4_SAAS_EMAIL_MEASUREMENT_ID: ''
+          RELEASE_ID: ${{ github.sha }}
         run: |
           if [ -z "$VITE_API_BASE_URL" ]; then
-            echo "::notice::SANDBOX_API_BASE_URL is not set — the app will call https://email.gh.aicountly.com/api (same origin), which is where this workflow deploys server-php below."
-          else
-            echo "Building against API base URL: $VITE_API_BASE_URL"
+            echo "::notice::SANDBOX_API_BASE_URL is unset — the app will call https://email.gh.aicountly.com/api (same origin)."
           fi
-          npm run build
+          npm run build -- --base="/releases/${RELEASE_ID}/"
+
+      - name: Stamp the release
+        env:
+          RELEASE_ID: ${{ github.sha }}
+        run: python3 scripts/stamp-release.py web/dist
 
       - name: Verify build output
         run: |
-          test -f web/dist/index.html || { echo "::error::web/dist/index.html missing — build produced no output"; exit 1; }
-          test -f web/dist/.htaccess || echo "::warning::web/dist/.htaccess missing — SPA routes may 404 on refresh, which breaks the /auth/callback landing"
-          # Belt and braces: a .env must never be shipped.
-          if find web/dist -name '.env*' | grep -q .; then
-            echo "::error::an .env file ended up in web/dist — refusing to deploy"
+          test -f web/dist/index.html || { echo "::error::web/dist/index.html missing"; exit 1; }
+          test -f web/dist/.htaccess  || { echo "::error::web/dist/.htaccess missing — SPA routes would 404 on refresh"; exit 1; }
+          grep -q 'aicountly-release' web/dist/index.html || { echo "::error::the release marker was not stamped"; exit 1; }
+          if find web/dist -name '.env*' -o -name '*.map' | grep -q .; then
+            echo "::error::an .env or a source map ended up in web/dist — refusing to deploy"
             exit 1
           fi
-          test -d server-php || { echo "::error::server-php/ is missing — the API deploy step below has nothing to deploy"; exit 1; }
-          test -f server-php/index.php || { echo "::error::server-php/index.php missing — the API has no front controller"; exit 1; }
-          # The API's .env is created once on the server and must never be
-          # committed — a committed one would be uploaded over the real file.
+          test -f server-php/index.php || { echo "::error::server-php/index.php missing"; exit 1; }
           if find server-php -name '.env' | grep -q .; then
-            echo "::error::server-php contains a committed .env — refusing to deploy. The API .env belongs on the server only."
+            echo "::error::server-php contains a committed .env — refusing to deploy"
             exit 1
           fi
-          # A syntax error here is a 500 on every endpoint, and rsync would ship
-          # it happily. Cheaper to catch on the runner.
-          find server-php -name '*.php' -print0 | xargs -0 -n1 php -l
 
       - name: Configure SSH
         env:
@@ -140,43 +141,33 @@ jobs:
           SSH_PORT: ${{ secrets.SANDBOX_SSH_PORT }}
           SSH_USER: ${{ secrets.SANDBOX_SSH_USER }}
         run: |
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          # CRLF line endings produce a key ssh silently ignores, which surfaces
+          # only as "Permission denied (publickey)".
+          sed -i 's/\r$//' ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
 
-          # A truncated paste or CRLF line endings produce a key file that ssh
-          # silently ignores, which then surfaces only as "Permission denied
-          # (publickey)". Catch it here where the cause is still obvious.
-          sed -i 's/\r$//' ~/.ssh/deploy_key
           if ! ssh-keygen -y -f ~/.ssh/deploy_key > ~/.ssh/deploy_key.pub 2>/dev/null; then
             echo "::error::SANDBOX_SSH_PRIVATE_KEY is not a usable OpenSSH private key. Copy the whole file, including the BEGIN and END lines."
             exit 1
           fi
-
-          # Fingerprint and public key are not secret, and they are what you
-          # compare against the server to confirm the right key is authorised.
-          echo "Deploy key: $(ssh-keygen -l -f ~/.ssh/deploy_key)"
-          echo "Public key that must appear in the cPanel user's ~/.ssh/authorized_keys:"
+          echo "Public key that must be AUTHORISED in cPanel for this account:"
           sed 's/^/    /' ~/.ssh/deploy_key.pub
 
-          # Pin the host key so deploys fail closed rather than trusting
+          # Pin the host key so the deploy fails closed rather than trusting
           # whatever answers on that address.
           if ! ssh-keyscan -p "${SSH_PORT:-22}" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/tmp/keyscan.err; then
             echo "::error::ssh-keyscan could not reach the host on the configured port."
             sed 's/^/    /' /tmp/keyscan.err
             exit 1
           fi
-          if [ ! -s ~/.ssh/known_hosts ]; then
-            echo "::error::The host returned no SSH host key. Check SANDBOX_SSH_HOST and SANDBOX_SSH_PORT."
-            exit 1
-          fi
+          [ -s ~/.ssh/known_hosts ] || { echo "::error::The host returned no SSH host key. Check SANDBOX_SSH_HOST and SANDBOX_SSH_PORT."; exit 1; }
           chmod 600 ~/.ssh/known_hosts
 
           # Older cPanel / CloudLinux hosts offer only RSA with SHA-1, which
-          # OpenSSH 8.8+ (what the runner ships) refuses by default. Without
-          # these two options such a server rejects a perfectly valid key with
-          # exactly the same "Permission denied (publickey)" message.
+          # OpenSSH 8.8+ refuses by default and reports as the same
+          # "Permission denied" as an unauthorised key.
           cat > ~/.ssh/config <<CFG
           Host deploy-target
             HostName $SSH_HOST
@@ -191,126 +182,145 @@ jobs:
           CFG
           chmod 600 ~/.ssh/config
 
-      # Authenticate before touching the document root, so a key problem is
-      # reported as a key problem rather than as an rsync exit code.
       - name: Verify SSH authentication
         run: |
-          if ssh deploy-target 'echo connected' > /tmp/ssh.out 2>/tmp/ssh.err; then
+          if ssh deploy-target 'echo connected' >/dev/null 2>/tmp/ssh.err; then
             echo "SSH authentication succeeded."
             exit 0
           fi
-
-          echo "::error::SSH authentication to the cPanel host failed. The server refused the deploy key."
-          echo "--- ssh output ---"
+          echo "::error::SSH authentication failed. Most often the key is imported but not AUTHORISED in cPanel (SSH Access > Manage SSH Keys > Manage > Authorize)."
           sed 's/^/    /' /tmp/ssh.err
-
-          # The server's half of the exchange is the only thing that separates
-          # "key is not authorised" from "server cannot use this key type".
-          # They produce an identical Permission denied without it.
-          ssh -vvv deploy-target 'true' >/dev/null 2>/tmp/ssh.verbose || true
-
-          echo "--- server version and key negotiation ---"
-          grep -iE 'remote software version|remote protocol version|Offering public key|Server accepts key|send_pubkey_test|Authentications that can continue|no mutual signature|Unable to negotiate' \
-            /tmp/ssh.verbose | sed 's/^/    /' || echo "    (no negotiation detail captured)"
-
-          echo "--- host key types this server published ---"
-          awk '{print $2}' ~/.ssh/known_hosts | sort -u | sed 's/^/    /'
-
-          cat <<'HINT'
-
-          Most common causes, in the order worth checking:
-
-            1. The public key is not authorised for this cPanel user.
-               cPanel imports and authorises as two separate actions: after
-               importing, open SSH Access > Manage SSH Keys and click Manage,
-               then Authorize. An imported-but-unauthorised key fails exactly
-               like this.
-
-            2. The server is too old to understand the key type. Look for the
-               remote software version above: OpenSSH below 6.5 has no Ed25519
-               support at all, so it ignores an Ed25519 key and reports this
-               same error. Generate an RSA key instead (ssh-keygen -t rsa -b
-               4096), authorise that, and store it in the secret. cPanel's own
-               key generator defaults to RSA for this reason.
-
-            3. The public key printed in the Configure SSH step does not match
-               the one in the cPanel user's ~/.ssh/authorized_keys. Compare
-               them character for character.
-
-            4. SANDBOX_SSH_USER is not the cPanel account username.
-
-            5. The private key stored in the secret belongs to a different key
-               pair than the public key on the server.
-
-            6. Permissions on the server: ~/.ssh must be 700 and
-               ~/.ssh/authorized_keys 600, owned by the account. sshd silently
-               refuses keys when these are too open.
-
-          HINT
           exit 1
 
-      - name: Deploy web build to the document root
+      # No --delete: the previous release's assets stay so an open browser
+      # session keeps working across the deploy, and so a rollback has
+      # something to restore.
+      - name: Upload the release
         env:
           REMOTE_ROOT: ${{ secrets.SANDBOX_SSH_REMOTE_ROOT }}
+          RELEASE_ID: ${{ github.sha }}
         run: |
-          # Connection settings come from ~/.ssh/config (host deploy-target),
-          # written in the Configure SSH step.
-          #
-          # Trailing slash on web/dist/ copies the *contents* into REMOTE_ROOT.
-          #
-          # --delete keeps the docroot free of files removed from the build.
-          # The excludes below protect paths that are not part of the web build
-          # and must survive a deploy:
-          #   api/         — the PHP backend lives inside the document root and
-          #                  is deployed by the next step. Without this exclude
-          #                  this step would delete the entire API.
-          #   .env         — server-side env file, if one is placed there
-          #   .well-known/ — Let's Encrypt / AutoSSL validation; deleting it
-          #                  breaks certificate renewal
-          #   cgi-bin/     — cPanel-managed, present in every docroot
-          #   .git*        — never publish repository metadata
-          rsync -avz --delete \
-            --exclude='api/' \
-            --exclude='.env' \
-            --exclude='.env.*' \
-            --exclude='.git*' \
-            --exclude='.well-known/' \
-            --exclude='cgi-bin/' \
-            --chmod=D755,F644 \
-            -e ssh \
-            web/dist/ "deploy-target:$REMOTE_ROOT/"
+          ssh deploy-target "mkdir -p '$REMOTE_ROOT/releases/$RELEASE_ID'"
 
-      - name: Deploy server-php to the api folder
+          # .htaccess is excluded here and sent to the document root separately:
+          # inside releases/ its SPA fallback would answer a missing asset with
+          # the application instead of a 404.
+          rsync -az --exclude='.htaccess' --exclude='.env' --exclude='.env.*' --exclude='.git*' \
+            --chmod=D755,F644 -e ssh \
+            web/dist/ "deploy-target:$REMOTE_ROOT/releases/$RELEASE_ID/"
+
+          local_count=$(find web/dist -type f ! -name '.htaccess' | wc -l)
+          remote_count=$(ssh deploy-target "find '$REMOTE_ROOT/releases/$RELEASE_ID' -type f | wc -l")
+          echo "Uploaded $remote_count file(s); the build has $local_count."
+          [ "$remote_count" -ge "$local_count" ] || { echo "::error::the release directory is incomplete — refusing to activate it"; exit 1; }
+
+      - name: Update the document root configuration
+        env:
+          REMOTE_ROOT: ${{ secrets.SANDBOX_SSH_REMOTE_ROOT }}
+        run: rsync -az --chmod=F644 -e ssh web/dist/.htaccess "deploy-target:$REMOTE_ROOT/.htaccess"
+
+      # One atomic rename, last. No request ever sees a partial index.html.
+      - name: Activate the release
+        env:
+          REMOTE_ROOT: ${{ secrets.SANDBOX_SSH_REMOTE_ROOT }}
+          RELEASE_ID: ${{ github.sha }}
+        run: |
+          ssh deploy-target "REMOTE_ROOT='$REMOTE_ROOT' RELEASE_ID='$RELEASE_ID' bash -s" <<'REMOTE'
+          set -eu
+          release_dir="$REMOTE_ROOT/releases/$RELEASE_ID"
+          live="$REMOTE_ROOT/index.html"
+          staged="$REMOTE_ROOT/.index-$RELEASE_ID.pending"
+          backup="$release_dir/previous-index.html"
+
+          [ -f "$release_dir/index.html" ] || { echo "release index.html missing"; exit 1; }
+
+          # Only the FIRST backup is kept, so re-running a release does not
+          # overwrite the index it originally replaced.
+          if [ -f "$live" ] && [ ! -f "$backup" ]; then
+            cp -p "$live" "$backup"
+          fi
+
+          cp -p "$release_dir/index.html" "$staged"
+          mv -f "$staged" "$live"
+          echo "Activated release $RELEASE_ID"
+          REMOTE
+
+      - name: Deploy the API
         env:
           REMOTE_ROOT: ${{ secrets.SANDBOX_SSH_REMOTE_ROOT }}
         run: |
           # The API's .env is created once by hand on the server and read at
-          # runtime on every request, unlike the web build. It must never be
-          # uploaded and must never be deleted, hence the excludes below
-          # combined with --delete.
+          # runtime, so it must survive --delete. .env.example IS shipped and
+          # the include comes first because rsync takes the first matching rule.
           rsync -avz --delete \
-            --exclude='.env' \
-            --exclude='.env.*' \
-            --exclude='.git*' \
-            --chmod=D755,F644 \
-            -e ssh \
+            --include='.env.example' \
+            --exclude='.env' --exclude='.env.*' --exclude='.git*' \
+            --chmod=D755,F644 -e ssh \
             server-php/ "deploy-target:$REMOTE_ROOT/api/"
+          echo "::notice::On a first API deploy, copy api/.env.example to api/.env on the server and fill it in."
 
-          echo "Deployed server-php to \$REMOTE_ROOT/api/"
-          echo "::notice::If this is the first API deploy, create api/.env on the server from server-php/.env.example — it is never uploaded."
+      - name: Run database migrations
+        env:
+          REMOTE_ROOT: ${{ secrets.SANDBOX_SSH_REMOTE_ROOT }}
+          PHP_BIN: ${{ secrets.SANDBOX_PHP_BIN }}
+        run: |
+          rc=0
+          ssh deploy-target "REMOTE_ROOT='$REMOTE_ROOT' PHP_BIN='${PHP_BIN:-}' bash -s" <<'REMOTE' || rc=$?
+          set -u
+          cd "$REMOTE_ROOT/api" 2>/dev/null || exit 91
+          [ -f .env ] || exit 92
 
-      # A deployed API that cannot answer is worth knowing about now rather
-      # than from the app's login screen. /health needs no credentials.
+          # cPanel hosts carry several PHP builds and the one on PATH is often
+          # the oldest. 8.1+ and pdo_pgsql are both required.
+          php_ok() {
+            [ -x "$1" ] || return 1
+            v=$("$1" -r 'echo PHP_VERSION_ID;' 2>/dev/null) || return 1
+            case "$v" in ''|*[!0-9]*) return 1 ;; esac
+            [ "$v" -ge 80100 ] || return 1
+            "$1" -m 2>/dev/null | grep -qix 'pdo_pgsql' || return 1
+          }
+
+          PHP=""
+          if [ -n "${PHP_BIN:-}" ] && php_ok "$PHP_BIN"; then
+            PHP="$PHP_BIN"
+          else
+            for candidate in /opt/cpanel/ea-php84/root/usr/bin/php \
+                             /opt/cpanel/ea-php83/root/usr/bin/php \
+                             /opt/cpanel/ea-php82/root/usr/bin/php \
+                             /opt/cpanel/ea-php81/root/usr/bin/php \
+                             /usr/local/bin/php /usr/bin/php php; do
+              if php_ok "$candidate"; then PHP="$candidate"; break; fi
+            done
+          fi
+          [ -n "$PHP" ] || exit 93
+
+          "$PHP" bin/migrate.php
+          REMOTE
+
+          case "$rc" in
+            0)  echo "Migrations are up to date." ;;
+            91) echo "::error::$REMOTE_ROOT/api does not exist. Deploy the API first."; exit 1 ;;
+            92) echo "::error::api/.env does not exist on the server."; exit 1 ;;
+            93) echo "::error::No PHP 8.1+ with pdo_pgsql found. Set SANDBOX_PHP_BIN to its full path."; exit 1 ;;
+            2)  echo "::error::An applied migration has been edited. Add a new migration instead."; exit 1 ;;
+            *)  echo "::error::Migrations failed (exit $rc)."; exit 1 ;;
+          esac
+
       - name: Smoke-test the deployed API
         run: |
-          url="https://email.gh.aicountly.com/api/health"
-          code=$(curl -fsS -o /tmp/health.json -w '%{http_code}' --max-time 20 "$url" || echo "000")
+          code=$(curl -fsS -o /tmp/health.json -w '%{http_code}' --max-time 20 "https://email.gh.aicountly.com/api/health" || echo "000")
           if [ "$code" = "200" ]; then
-            echo "GET $url → 200"
             cat /tmp/health.json
+            grep -q '"usable":true' /tmp/health.json || echo "::warning::The API is up but reports usable:false — check the database and mail settings in api/.env."
           else
-            echo "::warning::GET $url returned $code. If this is the first deploy, check that the subdomain's document root is the one in SANDBOX_SSH_REMOTE_ROOT and that api/.env exists."
+            echo "::warning::GET /api/health returned $code."
           fi
+
+      - name: Verify the live release
+        env:
+          SITE_ORIGIN: https://email.gh.aicountly.com
+          EXPECTED_RELEASE: ${{ github.sha }}
+        run: python3 scripts/verify-release.py
 
       - name: Clean up SSH credentials
         if: always()
@@ -324,9 +334,9 @@ jobs:
             echo ""
             echo "| | |"
             echo "|---|---|"
-            echo "| Target | https://email.gh.aicountly.com |"
-            echo "| Web | \`web/dist/\` → document root |"
-            echo "| API | \`server-php/\` → \`api/\` in the document root |"
-            echo "| Commit | \`${GITHUB_SHA:0:7}\` |"
-            echo "| Ref | \`${GITHUB_REF_NAME}\` |"
+            echo "| Destination | https://email.gh.aicountly.com |"
+            echo "| Presentation | business |"
+            echo "| Release | \`${GITHUB_SHA}\` |"
+            echo "| Assets | \`releases/${GITHUB_SHA}/\` |"
+            echo "| Result | ${{ job.status }} |"
           } >> "$GITHUB_STEP_SUMMARY"

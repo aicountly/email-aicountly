@@ -5,6 +5,8 @@
  * AICOUNTLY SaaS resolves the login portal and its product key identically.
  */
 
+import { env } from '../config/buildEnv.ts'
+
 const SANDBOX_GH_ZONE_RE = /^[a-z0-9-]+\.gh\.aicountly\.com$/i
 const LEGACY_SANDBOX_RE = /^gh-[a-z0-9-]+\.aicountly\.com$/i
 
@@ -15,7 +17,7 @@ const LEGACY_SANDBOX_RE = /^gh-[a-z0-9-]+\.aicountly\.com$/i
  * email.aicountly.com and email.gh.aicountly.com. This is the fallback for
  * hosts the pattern does not cover — localhost above all.
  */
-export const PRODUCT_KEY = (import.meta.env.VITE_PRODUCT_KEY ?? 'email').trim() || 'email'
+export const PRODUCT_KEY = env('VITE_PRODUCT_KEY') || 'email'
 
 /** Login portal — renders the sign-in form and performs the SSO jump. */
 export const PORTAL_LOGIN_PRODUCTION = 'https://my.aicountly.com'
@@ -72,7 +74,7 @@ export function resolveProductKeyFromHost(hostname: string = currentHost()): str
 
 /** Where the user signs in: sandbox portal for sandbox hosts, my. for production. */
 export function resolveLoginPortalOrigin(hostname: string = currentHost()): string {
-  const override = (import.meta.env.VITE_PORTAL_LOGIN_URL ?? '').trim()
+  const override = env('VITE_PORTAL_LOGIN_URL')
   if (override) return override.replace(/\/$/, '')
   return isSandboxHost(hostname) ? PORTAL_LOGIN_SANDBOX : PORTAL_LOGIN_PRODUCTION
 }

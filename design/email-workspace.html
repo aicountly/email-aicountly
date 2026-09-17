@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Aicountly Email</title>
+  <link rel="stylesheet" href="./email-workspace.css">
+</head>
+<body>
+<!--
+  DESIGN REFERENCE ONLY — Aicountly Interactive Services Private Limited.
+
+  This file is the approved visual scaffold for Aicountly Email. It is NOT the
+  application and is never deployed: the real implementation lives in
+  web/src/ and is built from the same tokens (web/src/styles/email.css).
+
+  Every value below is illustrative. Production renders real state, and email
+  HTML is never injected into this layout — it goes through the sandboxed
+  renderer (web/src/components/SecureMessageFrame.tsx).
+-->
+<div class="email-app">
+  <aside class="ecosystem" aria-label="Aicountly applications">
+    <a class="ecosystem__brand" href="/" aria-label="Email home">&#9993;</a>
+    <button class="ecosystem__item is-active">Mail</button>
+    <button class="ecosystem__item">Books</button>
+    <button class="ecosystem__item">Inventory</button>
+    <button class="ecosystem__item">Calendar</button>
+    <button class="ecosystem__item">Drive</button>
+    <button class="ecosystem__item">Lobby</button>
+  </aside>
+
+  <aside class="mail-navigation" aria-label="Mailbox">
+    <a class="wordmark" href="/">
+      aicountly <span>EMAIL</span>
+    </a>
+
+    <button class="button button--primary compose-button">
+      + Compose
+    </button>
+
+    <nav class="nav-list">
+      <button class="nav-item">Pulse <span>AI</span></button>
+      <button class="nav-item is-selected" aria-current="page">
+        Inbox <span>24</span>
+      </button>
+      <button class="nav-item">Needs decision <span>6</span></button>
+      <button class="nav-item">Promises <span>4</span></button>
+      <button class="nav-item">Waiting on others <span>8</span></button>
+      <button class="nav-item">Sent</button>
+      <button class="nav-item">Drafts <span>3</span></button>
+      <button class="nav-item">Scheduled</button>
+      <button class="nav-item">Documents</button>
+      <button class="nav-item">Shared mailboxes</button>
+      <button class="nav-item">Spam</button>
+      <button class="nav-item">Trash</button>
+    </nav>
+
+    <div class="navigation-footer">
+      <button class="nav-item">Settings</button>
+      <button class="account-button">
+        <span class="avatar">RG</span>
+        <span>Rahul Gupta<small>Business workspace</small></span>
+      </button>
+    </div>
+  </aside>
+
+  <div class="workspace">
+    <header class="topbar">
+      <label class="search-field">
+        <span class="sr-only">Search email or ask Pulse</span>
+        <input type="search"
+          placeholder="Ask your inbox or search anything&hellip;">
+        <kbd>Ctrl K</kbd>
+      </label>
+      <button class="button button--quiet workspace-picker">
+        Acme Industries
+      </button>
+      <button class="avatar" aria-label="Account menu">RG</button>
+    </header>
+
+    <section class="briefing" aria-labelledby="briefing-title">
+      <div class="pulse-orb" aria-hidden="true"></div>
+      <div class="briefing__copy">
+        <h1 id="briefing-title">Good morning, Rahul.</h1>
+        <p>Your inbox, organised around what needs you.</p>
+        <div class="chip-row">
+          <span class="chip">6 decisions</span>
+          <span class="chip">2 commitments due</span>
+          <span class="chip">8 waiting for replies</span>
+        </div>
+      </div>
+      <button class="button button--outline">
+        &#9654; Listen to my briefing
+      </button>
+    </section>
+
+    <main class="mail-grid">
+      <section class="message-list panel" aria-labelledby="inbox-title">
+        <header class="panel-heading">
+          <h2 id="inbox-title">Your priority inbox</h2>
+          <button class="icon-button" aria-label="Inbox filters">&#9783;</button>
+        </header>
+
+        <div class="filter-row" aria-label="Inbox view">
+          <button class="filter is-active" aria-pressed="true">Priority</button>
+          <button class="filter" aria-pressed="false">All mail</button>
+          <button class="filter" aria-pressed="false">People</button>
+        </div>
+
+        <div class="message-rows">
+          <button class="message-row is-selected" aria-current="true">
+            <span class="avatar avatar--blue">MS</span>
+            <span class="message-row__content">
+              <span class="message-row__meta">
+                <strong>Meera &middot; Apex Components</strong>
+                <time>9:42 AM</time>
+              </span>
+              <strong>Revised quote for PO-1048</strong>
+              <span class="muted">Updated rates and delivery attached.</span>
+              <span class="badge badge--warning">Price mismatch</span>
+            </span>
+          </button>
+
+          <button class="message-row">
+            <span class="avatar avatar--purple">RN</span>
+            <span class="message-row__content">
+              <strong>Rohan &middot; Northstar</strong>
+              <strong>Payment promised for Friday</strong>
+              <span class="muted">Can you confirm the payment date?</span>
+              <span class="badge badge--danger">Follow-up needed</span>
+            </span>
+          </button>
+
+          <button class="message-row">
+            <span class="avatar avatar--peach">PD</span>
+            <span class="message-row__content">
+              <strong>Priya &middot; Design Studio</strong>
+              <strong>Packaging proof approval</strong>
+              <span class="muted">The latest version is ready.</span>
+              <span class="badge badge--neutral">Decision needed</span>
+            </span>
+          </button>
+        </div>
+
+        <button class="text-button list-explanation">
+          Explain this priority
+        </button>
+      </section>
+
+      <article class="reading-pane panel" aria-labelledby="message-title">
+        <div class="message-toolbar" aria-label="Message actions">
+          <button class="text-button">Archive</button>
+          <button class="text-button">Star</button>
+          <button class="text-button">Snooze</button>
+          <button class="icon-button" aria-label="More actions">&bull;&bull;&bull;</button>
+        </div>
+
+        <header class="message-header">
+          <h2 id="message-title">Revised quote for PO-1048</h2>
+          <div class="sender">
+            <span class="avatar avatar--blue">MS</span>
+            <div>
+              <strong>Meera Shah</strong>
+              <p>Apex Components &middot; 9:42 AM</p>
+              <small>To Rahul</small>
+            </div>
+          </div>
+        </header>
+
+        <section class="ai-summary" aria-label="AI summary">
+          <h3>&#10022; The change that matters</h3>
+          <p>Unit price increased by 8%. Delivery moved from
+             22 to 25 September.</p>
+          <div class="chip-row">
+            <button class="source-chip">Email &middot; today</button>
+            <button class="source-chip">Purchase order &middot; PO-1048</button>
+          </div>
+          <small>AI-assisted summary &middot; Review sources</small>
+        </section>
+
+        <section class="message-body" aria-label="Email content">
+          <p>Hi Rahul,</p>
+          <p>Please find our revised quotation attached. The updated unit
+             price is &#8377;540, with delivery on 25 September. Please confirm
+             so we can reserve production.</p>
+          <p>Regards,<br>Meera</p>
+        </section>
+
+        <button class="attachment">
+          <span class="file-icon">PDF</span>
+          <span>Apex_Quote_v3.pdf<small>248 KB &middot; Preview</small></span>
+        </button>
+
+        <section class="comparison-card">
+          <h3>Email vs business record</h3>
+          <div class="table-scroll">
+            <table>
+              <caption class="sr-only">Purchase order and email comparison</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Field</th>
+                  <th scope="col">Purchase order</th>
+                  <th scope="col">Latest email</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th scope="row">Unit price</th>
+                  <td>&#8377;500</td>
+                  <td><mark>&#8377;540 &middot; +8%</mark></td>
+                </tr>
+                <tr>
+                  <th scope="row">Delivery</th>
+                  <td>22 Sep</td>
+                  <td><mark>25 Sep &middot; +3 days</mark></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="source-note">Source: Purchase &middot; checked 9:43 AM</p>
+        </section>
+
+        <section class="reply-card">
+          <h3>&#10022; Suggested reply</h3>
+          <label class="sr-only" for="reply">Edit suggested reply</label>
+          <textarea id="reply" rows="4">Thanks, Meera. Our PO has a unit price of Rs 500 and delivery on 22 September. Can you retain these terms?</textarea>
+          <div class="reply-actions">
+            <button class="button button--quiet">Tone: Professional</button>
+            <button class="button button--primary">Review &amp; send</button>
+          </div>
+        </section>
+      </article>
+
+      <aside class="pulse-panel panel" aria-labelledby="pulse-title">
+        <header class="pulse-heading">
+          <div class="pulse-orb pulse-orb--small" aria-hidden="true"></div>
+          <div>
+            <h2 id="pulse-title">Pulse AI</h2>
+            <p>Context into action</p>
+          </div>
+        </header>
+
+        <section class="insight-card">
+          <h3>Recommended next step</h3>
+          <p>Resolve the price change before confirming.</p>
+          <button class="text-button">Based on 2 sources</button>
+          <div class="action-preview">
+            <strong>Review revised purchase terms</strong>
+            <span class="badge badge--neutral">Approval required</span>
+            <button class="button button--outline">Preview action</button>
+          </div>
+        </section>
+
+        <section class="insight-card">
+          <h3>Commitment radar</h3>
+          <ol class="commitment-list">
+            <li><strong>22 Sep</strong> Original delivery</li>
+            <li><strong>25 Sep</strong> Supplier proposal</li>
+          </ol>
+          <span class="badge badge--warning">Not yet agreed</span>
+        </section>
+
+        <section class="insight-card">
+          <h3>Connected context</h3>
+          <button class="context-link">Purchase &middot; PO-1048 <span>View</span></button>
+          <button class="context-link">Inventory &middot; Availability <span>Check</span></button>
+          <button class="context-link">Drive &middot; Attachment <span>Preview</span></button>
+          <button class="context-link">Calendar &middot; Reminder <span>Preview</span></button>
+        </section>
+
+        <section class="risk-card">
+          <h3>Payment details need review</h3>
+          <p>Compare changes and verify using a known contact.</p>
+          <button class="text-button">Compare details</button>
+        </section>
+
+        <form class="pulse-question">
+          <label class="sr-only" for="pulse-question">Ask Pulse</label>
+          <input id="pulse-question" placeholder="Ask about this thread&hellip;">
+          <button class="icon-button" type="submit" aria-label="Ask Pulse">&rarr;</button>
+        </form>
+      </aside>
+    </main>
+
+    <footer class="demo-note">Design reference &middot; Illustrative data</footer>
+  </div>
+</div>
+</body>
+</html>

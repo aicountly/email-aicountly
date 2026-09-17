@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { rememberIconChoice } from './appLauncher'
-import type { LauncherTile } from './appLauncher'
+import { rememberIconChoice } from './appLauncher.ts'
+import type { LauncherTile } from './appLauncher.ts'
 
 /**
  * Resolves the icon a launcher tile shows, without an old→new flash.
