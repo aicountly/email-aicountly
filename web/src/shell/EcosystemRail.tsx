@@ -15,6 +15,8 @@ const RAIL = [
   { id: 'inventory', label: 'Inventory', Icon: Boxes },
   { id: 'calendar', label: 'Calendar', Icon: CalendarDays },
   { id: 'docs', label: 'Drive', Icon: HardDrive },
+  // The catalog id stays `receptionist` after the Lobby rename — it keys the
+  // uploaded product icon in Manage. Only the name and the hosts moved.
   { id: 'receptionist', label: 'Lobby', Icon: Users },
 ] as const
 
