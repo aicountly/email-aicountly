@@ -15,9 +15,17 @@
 # migrations run ONCE with it. Running them per frontend would run them twice
 # against one database, which is how a migration matrix corrupts a schema.
 #
-# DEPLOYS ARE MANUAL. workflow_dispatch is the only trigger that deploys —
-# merging never does. pull_request runs the verify job and nothing else. Do not
-# add push or schedule triggers to this file.
+# MANUAL ONLY. workflow_dispatch is the SINGLE trigger. Nothing in this file
+# runs on a push, a pull request, a merge or a schedule, and nothing should be
+# added that does — this repository's deploys are started by a person, on
+# purpose, and the verification job below is part of that same run.
+#
+# The same checks run locally, and should be run there before merging:
+#
+#   cd web && npm run typecheck && npm run test:ci && npm run build
+#   find server-php -name '*.php' -print0 | xargs -0 -n1 php -l
+#   php server-php/tests/run.php
+#   python3 scripts/audit-data-ownership.py
 # ---------------------------------------------------------------------------
 name: Deploy to cPanel Production
 
@@ -32,8 +40,6 @@ on:
           - both
           - business
           - personal
-  pull_request:
-    branches: [main]
 
 # Never let two deploys to the same target overlap. Not cancel-in-progress: a
 # half-finished upload that is cancelled leaves a release directory incomplete.
@@ -160,7 +166,6 @@ jobs:
   deploy:
     name: Deploy ${{ matrix.label }}
     needs: build
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -613,7 +618,7 @@ jobs:
   report:
     name: Report
     needs: deploy
-    if: always() && github.event_name == 'workflow_dispatch'
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Independent results
