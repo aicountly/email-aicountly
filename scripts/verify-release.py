@@ -61,6 +61,39 @@ class IndexParser(HTMLParser):
             self.styles.append(values["href"])
 
 
+def classify_service_worker(status: int, content_type: str, body: str) -> tuple[bool, str]:
+    """Is there really a service worker at this path, or did the SPA answer?
+
+    Pure, and separated out because the first version of this check got it
+    wrong in a way no amount of staring at it revealed: it asked for a 404,
+    which a catch-all SPA fallback can never give. The fallback answers every
+    unknown path with index.html and a 200 — /auth/callback depends on that —
+    so "200" says nothing at all about whether a worker exists.
+
+    What settles it is WHAT came back. A service worker is JavaScript. The app
+    shell is HTML and carries the release marker.
+
+    Returns (ok, detail); ok=True means no worker is there.
+    """
+    if status == 404:
+        return True, "nothing is served there"
+
+    lowered = content_type.lower()
+    is_javascript = "javascript" in lowered or "ecmascript" in lowered
+    is_app_shell = 'name="aicountly-release"' in body or 'id="root"' in body
+
+    if is_javascript:
+        return False, f"JavaScript is served here (status {status}, type {content_type!r})"
+
+    if is_app_shell:
+        return True, "the SPA fallback answered; no worker file is there"
+
+    return False, (
+        f"something other than the app shell is served here (status {status}, type {content_type!r}) — "
+        "a registered worker would intercept every request for this origin"
+    )
+
+
 def fetch(url: str, *, headers: dict[str, str] | None = None):
     # Certificate verification stays on. A verifier that skips it verifies
     # nothing that matters.
@@ -194,16 +227,32 @@ def main() -> int:
     results.append(check("no development fixture markers in the served document", not fixtures, f"found {fixtures}"))
 
     # A service worker left over from another product on the same origin would
-    # serve its cached shell instead of this one.
-    try:
-        with fetch(f"{origin}/sw.js") as response:
-            results.append(
-                check("no stale service worker at /sw.js", response.status == 404, f"status {response.status}")
-            )
-    except urllib.error.HTTPError as error:
-        results.append(check("no stale service worker at /sw.js", error.code == 404, f"status {error.code}"))
-    except Exception:  # noqa: BLE001 — not reachable is the same as not there
-        results.append(check("no stale service worker at /sw.js", True))
+    # intercept fetches and serve its own cached shell instead of this release.
+    #
+    # WHAT THIS CANNOT DO IS ASK FOR A 404. The SPA fallback answers every path
+    # that is not a real file with index.html and a 200 — that is the whole
+    # point of it, and /auth/callback two checks above relies on it. Demanding
+    # a 404 here therefore fails on a perfectly healthy deployment, which is
+    # exactly what it did on the first production run.
+    #
+    # A worker is only really there if the response is JavaScript. The app
+    # shell is not, and it carries the release marker, so either signal
+    # settles it.
+    for candidate in ("/sw.js", "/service-worker.js"):
+        label = f"no stale service worker at {candidate}"
+        try:
+            with fetch(f"{origin}{candidate}") as response:
+                ok, detail = classify_service_worker(
+                    response.status,
+                    response.headers.get("Content-Type", ""),
+                    response.read().decode("utf-8", errors="replace"),
+                )
+                results.append(check(label, ok, detail))
+        except urllib.error.HTTPError as error:
+            ok, detail = classify_service_worker(error.code, "", "")
+            results.append(check(label, ok, detail))
+        except Exception as error:  # noqa: BLE001 — unreachable is the same as not there
+            results.append(check(label, True, f"not reachable ({error})"))
 
     failures = results.count(False)
     if failures:
@@ -216,5 +265,45 @@ def main() -> int:
     return 0
 
 
+SELF_TEST_CASES = [
+    # (name, status, content_type, body, expected_ok)
+    ("the SPA fallback answering an unknown path is not a worker",
+     200, "text/html", '<html><head><meta name="aicountly-release" content="abc"></head><body><div id="root"></div></body></html>', True),
+    ("a 404 is not a worker",
+     404, "", "", True),
+    ("a real service worker IS a worker",
+     200, "application/javascript", "self.addEventListener('fetch', () => {})", False),
+    ("a worker served as text/javascript is still a worker",
+     200, "text/javascript; charset=utf-8", "self.addEventListener('install', () => {})", False),
+    ("something that is neither the shell nor JavaScript is treated as a worker",
+     200, "application/octet-stream", "\x00binary", False),
+]
+
+
+def self_test() -> int:
+    """Check the classifier without needing a live origin.
+
+    The first production run of this script failed a healthy deployment because
+    the worker check demanded a 404 from a path the SPA fallback owns. These
+    cases are what stop that coming back.
+    """
+    print("verify-release self-test")
+    failures = 0
+
+    for name, status, content_type, body, expected in SELF_TEST_CASES:
+        ok, detail = classify_service_worker(status, content_type, body)
+        passed = ok is expected
+        failures += 0 if passed else 1
+        print(f"  {'ok  ' if passed else 'FAIL'}  {name}")
+        if not passed:
+            print(f"        expected ok={expected}, got ok={ok} ({detail})")
+
+    print(f"\n{len(SELF_TEST_CASES) - failures} passed, {failures} failed")
+
+    return 1 if failures else 0
+
+
 if __name__ == "__main__":
+    if "--self-test" in sys.argv:
+        sys.exit(self_test())
     sys.exit(main())

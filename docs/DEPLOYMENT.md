@@ -157,7 +157,14 @@ fails the job on any of:
 * a missing file under `/releases/` does **not** return 404
 * `index.html` is cached
 * a development fixture marker is in the served document
-* a stale service worker is present at `/sw.js`
+* a stale service worker is present at `/sw.js` or `/service-worker.js`
+
+A service worker is detected by **what is served**, not by a status code. The
+SPA fallback answers every unknown path with `index.html` and a 200 — that is
+what makes `/auth/callback` work — so a 200 there proves nothing. A worker is
+JavaScript; the app shell is HTML carrying the release marker. Asking for a 404
+instead failed the first production run on a perfectly healthy deployment, and
+`python3 scripts/verify-release.py --self-test` is what stops that returning.
 
 A release marker on its own is not a smoke test, which is why the rest are
 there.

@@ -113,6 +113,7 @@ php -S localhost:8000
 | `php server-php/tests/run.php` | Backend tests — no database needed |
 | `php server-php/bin/migrate.php --status` | What migrations are pending |
 | `python3 scripts/audit-data-ownership.py` | The cross-app replication audit |
+| `python3 scripts/verify-release.py --self-test` | Pins the release verifier's own logic |
 
 Open `design/email-workspace.html` in a browser to see the approved design. It
 is a scaffold, not the application: every value in it is illustrative, and the

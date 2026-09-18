@@ -26,6 +26,7 @@
 #   find server-php -name '*.php' -print0 | xargs -0 -n1 php -l
 #   php server-php/tests/run.php
 #   python3 scripts/audit-data-ownership.py
+#   python3 scripts/verify-release.py --self-test
 # ---------------------------------------------------------------------------
 name: Deploy to cPanel Production
 
@@ -92,6 +93,9 @@ jobs:
 
       - name: Audit for cross-application database replication
         run: python3 scripts/audit-data-ownership.py
+
+      - name: Self-test the release verifier
+        run: python3 scripts/verify-release.py --self-test
 
       - name: Build one artifact for both destinations
         working-directory: web
@@ -581,6 +585,13 @@ jobs:
           else
             echo "::warning::GET $ORIGIN/api/health returned $code. On a first deploy, check the subdomain's document root and that api/.env exists."
           fi
+
+      # The verifier's own logic first. It failed a healthy deployment once by
+      # demanding a 404 from a path the SPA fallback owns, and a verifier that
+      # cries wolf is worse than none — people start ignoring it.
+      - name: Verify the release verifier
+        if: steps.requested.outputs.run == 'true' && steps.config.outputs.configured == 'true'
+        run: python3 scripts/verify-release.py --self-test
 
       - name: Verify the live release
         if: steps.requested.outputs.run == 'true' && steps.config.outputs.configured == 'true'
